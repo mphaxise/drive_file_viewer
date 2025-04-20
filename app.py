@@ -306,38 +306,84 @@ def get_folder_name(service, folder_id):
         return None
 
 def download_file_content(service, file_id, mime_type):
-    """Download the content of a file from Google Drive."""
+    """Download content from a Google Drive file."""
     try:
-        logging.info(f"Attempting to download file {file_id} with mime type {mime_type}")
+        # Skip download for known binary file types that don't need content for summaries
+        file_ext = file_id.split('.')[-1].lower() if '.' in file_id else ''
+        binary_extensions = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tif', 'tiff', 'mp4', 'avi', 'mov', 
+                             'wmv', 'mp3', 'wav', 'ogg', 'pdf', 'zip', 'exe', 'dll']
         
-        if 'google-apps' in mime_type:
-            # For Google Docs, export as plain text
-            logging.debug(f"File {file_id} is a Google Doc, exporting as text/plain")
-            export_mime_type = 'text/plain'
-            response = service.files().export(fileId=file_id, mimeType=export_mime_type).execute()
-            content = response.decode('utf-8') if isinstance(response, bytes) else response
-            logging.info(f"Successfully exported Google Doc {file_id}, size: {len(content)} bytes")
-            return content
+        if file_ext in binary_extensions:
+            return f"Binary content (file extension: {file_ext})"
+            
+        # Handle Google Docs, Sheets, etc.
+        if mime_type.startswith('application/vnd.google-apps'):
+            # Map Google Docs types to export MIME types
+            export_mime_types = {
+                'application/vnd.google-apps.document': 'text/plain',
+                'application/vnd.google-apps.spreadsheet': 'text/csv',
+                'application/vnd.google-apps.presentation': 'text/plain',
+                'application/vnd.google-apps.drawing': 'text/plain',
+                'application/vnd.google-apps.script': 'application/json',
+                'application/vnd.google-apps.form': 'text/plain',
+            }
+            
+            # If mime_type is not in our mapping, don't attempt to export
+            if mime_type not in export_mime_types:
+                logging.info(f"Skipping unsupported Google Apps type: {mime_type}")
+                return f"Unsupported Google Apps type: {mime_type}"
+                
+            export_mime_type = export_mime_types.get(mime_type)
+            
+            try:
+                response = service.files().export(fileId=file_id, mimeType=export_mime_type).execute()
+                return response.decode('utf-8', errors='replace') if isinstance(response, bytes) else response
+            except Exception as e:
+                logging.error(f"Error exporting file {file_id}: {e}")
+                return f"Error exporting file: {str(e)[:100]}"
+                
+        # Handle binary files that can be downloaded directly
         else:
-            # For regular files, download the content
-            logging.debug(f"File {file_id} is a regular file, downloading content")
-            request = service.files().get_media(fileId=file_id)
-            file_content = BytesIO()
-            downloader = MediaIoBaseDownload(file_content, request)
-            logging.debug(f"Downloader created for {file_id}")
-            
-            done = False
-            while not done:
-                logging.debug(f"Downloading chunk for {file_id}...")
+            # Skip download for large files or known binary types
+            if not mime_type.startswith('text/') and not mime_type in ['application/json', 'application/xml', 'application/javascript']:
+                logging.info(f"Skipping binary file download for mime type: {mime_type}")
+                return f"Binary content (mime type: {mime_type})"
+                
+            try:
+                request = service.files().get_media(fileId=file_id)
+                downloader = MediaIoBaseDownload(io.BytesIO(), request)
+                done = False
+                
+                # Only download the first chunk for large files
                 status, done = downloader.next_chunk()
-                logging.debug(f"Download progress: {int(status.progress() * 100)}%")
-            
-            content = file_content.getvalue().decode('utf-8', errors='replace')
-            logging.info(f"Successfully downloaded file {file_id}, size: {len(content)} bytes")
-            return content
+                content = downloader.io_base.getvalue()
+                
+                # If file is too large, don't download more
+                if not done and len(content) > 1024 * 1024:  # 1MB limit
+                    logging.info(f"File {file_id} is too large, using partial content")
+                    return f"Large binary content (partial, size: {len(content)} bytes)"
+                    
+                # Continue downloading if not done and not too large
+                while not done:
+                    status, done = downloader.next_chunk()
+                
+                content = downloader.io_base.getvalue()
+                
+                # Try to decode as text if it might be a text file
+                if mime_type.startswith('text/') or mime_type in ['application/json', 'application/xml', 'application/javascript']:
+                    try:
+                        return content.decode('utf-8', errors='replace')
+                    except UnicodeDecodeError:
+                        return f"Binary content (size: {len(content)} bytes)"
+                else:
+                    return f"Binary content (size: {len(content)} bytes)"
+            except Exception as e:
+                logging.error(f"Error downloading file {file_id}: {e}")
+                return f"Error downloading file: {str(e)[:100]}"
+                
     except Exception as e:
-        logging.error(f"Error downloading file {file_id}: {e}", exc_info=True)
-        return None
+        logging.error(f"Error downloading file {file_id}: {e}")
+        return f"Error downloading file: {str(e)[:100]}"
 
 def list_files_in_folder(credentials, folder_id, generate_summaries=False):
     """List all files and folders in the specified Google Drive folder."""
@@ -571,6 +617,75 @@ def get_all_files_recursive(service, folder_id, folder_path="Root", include_summ
     """Recursively get all files and folders from Google Drive"""
     items = []
     page_token = None
+    
+    # First check if we have cached results for this folder
+    if include_summaries and 'last_folder_result_id' in session and 'last_folder_id' in session:
+        if session['last_folder_id'] == folder_id:
+            try:
+                # Try to use the stored results from the temporary file
+                result_id = session['last_folder_result_id']
+                result_file = TEMP_DIR / f"{result_id}.pickle"
+                logging.info(f"Looking for cached results in: {result_file}")
+                
+                if result_file.exists():
+                    with open(result_file, 'rb') as f:
+                        cached_result = pickle.load(f)
+                    
+                    if 'items' in cached_result:
+                        # Check if summaries exist in the cached results
+                        has_summaries = any(item.get('summary') and 
+                                           item.get('summary') != "Summary generation disabled" and
+                                           not item.get('summary', '').startswith("Error generating summary")
+                                           for item in cached_result['items'] if item.get('type') == 'file')
+                        
+                        if has_summaries:
+                            logging.info(f"Using cached summaries for folder {folder_id}")
+                            # Convert cached items to the format expected by get_all_files_recursive
+                            for item in cached_result['items']:
+                                if item.get('type') == 'file':
+                                    # Only use items with valid summaries
+                                    summary = item.get('summary', '')
+                                    valid_summary = (summary and 
+                                                    summary != "Summary generation disabled" and
+                                                    not summary.startswith("Error generating summary"))
+                                    
+                                    items.append({
+                                        'folder_path': folder_path,
+                                        'name': item['name'],
+                                        'is_folder': False,
+                                        'webViewLink': item.get('webViewLink', ''),
+                                        'summary': summary if valid_summary else "Summary generation disabled",
+                                        'notes': ''
+                                    })
+                                elif item.get('type') == 'folder':
+                                    # For folders, we need to recursively get their contents
+                                    # First add the folder itself
+                                    items.append({
+                                        'folder_path': folder_path,
+                                        'name': item['name'],
+                                        'is_folder': True
+                                    })
+                                    
+                                    # Then recursively get its contents
+                                    # Note: This is a simplification - in a real implementation, 
+                                    # you'd want to check if the subfolder's contents are also cached
+                                    sub_items = get_all_files_recursive(
+                                        service,
+                                        item['id'],
+                                        f"{folder_path}/{item['name']}",
+                                        include_summaries
+                                    )
+                                    items.extend(sub_items)
+                            
+                            # Return early with cached results
+                            logging.info(f"Successfully reused {len(items)} cached items")
+                            return items
+            except Exception as e:
+                logging.error(f"Error using cached results: {e}", exc_info=True)
+                # Fall back to fetching from Drive API
+    
+    # If we don't have cached results or couldn't use them, fetch from Drive API
+    logging.info(f"Fetching files from Drive API for folder {folder_id}")
     
     while True:
         try:
