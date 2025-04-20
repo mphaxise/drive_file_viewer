@@ -5,6 +5,11 @@ google-auth==2.16.2
 google-api-python-client==2.80.0
 python-dotenv==1.0.0
 
+# GenAI model dependencies
+transformers==4.35.2
+torch==2.1.1
+sentencepiece==0.1.99
+
 # Testing dependencies
 pytest==7.3.1
 pytest-cov==4.1.0

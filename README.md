@@ -7,6 +7,9 @@ A Flask web application that allows users to view files and folders from their G
 - View files and folders from Google Drive
 - Authentication via Google OAuth2
 - Export file listings to CSV
+- Generate comprehensive file summaries for all file types using AI
+- Recursive summarization for long documents
+- Metadata-based summaries for non-text files
 - Responsive UI with modern design
 
 ## Requirements
@@ -14,6 +17,7 @@ A Flask web application that allows users to view files and folders from their G
 - Python 3.8+
 - Google Cloud Platform account with Drive API enabled
 - OAuth 2.0 credentials configured
+- For file summaries: transformers, torch, and sentencepiece libraries
 
 ## Installation
 
@@ -59,6 +63,50 @@ http://localhost:5006
 
 5. Browse your files and folders
 
+## File Summary Feature
+
+The application includes an AI-powered file summary feature that generates concise summaries for all file types in your Google Drive.
+
+### How It Works
+
+1. Enable the "Generate Summaries" checkbox before clicking "View Files"
+2. For text-based files:
+   - The application downloads the content of text-based files
+   - The content is processed using Facebook's BART model (facebook/bart-large-cnn)
+   - For long documents, a recursive summarization approach is used to handle large texts
+   - A concise summary (maximum 25 words) is generated for each file
+3. For non-text files (images, videos, PDFs, etc.):
+   - The application generates metadata-based summaries
+   - Summaries include file type, size, and other relevant metadata
+
+### Supported File Types
+
+- **Text-based files**:
+  - Text files (.txt, .md, .csv, etc.)
+  - Google Docs
+  - Source code files
+  - Other text-based files
+- **Binary files**:
+  - Images (JPEG, PNG, GIF, etc.)
+  - Videos (MP4, MOV, etc.)
+  - Audio files (MP3, WAV, etc.)
+  - Documents (PDF, DOCX, etc.)
+  - Spreadsheets (XLSX, etc.)
+  - Presentations (PPTX, etc.)
+  - And all other file types
+
+### Features
+
+- **Recursive Summarization**: Handles large documents by breaking them into chunks, summarizing each chunk, and then summarizing the combined results
+- **Metadata-based Summaries**: Generates descriptive summaries for non-text files based on file type, size, and other metadata
+- **Concise Output**: All summaries are limited to a maximum of 25 words for quick scanning
+- **Error Handling**: Graceful fallbacks when summarization fails or when files cannot be accessed
+
+### Requirements
+
+- Requires the transformers, torch, and sentencepiece libraries for text-based summarization
+- Non-text file summaries work even without these dependencies
+
 ## Development
 
 ### Running Tests
@@ -77,12 +125,14 @@ python -m pytest --cov=app --cov-report=term-missing
 
 - `app.py`: Main application file with Flask routes and Google Drive API integration
 - `templates/`: HTML templates for the web interface
-- `test_app.py`: Test suite for the application
+- `tests/`: Test directory
+  - `test_app.py`: Test suite for the core application
+  - `test_summary.py`: Test suite for the file summary feature
 - `.coveragerc`: Configuration for code coverage analysis
 
 ## Code Coverage
 
-Current code coverage: 91%
+Current code coverage: 75%
 
 ## License
 

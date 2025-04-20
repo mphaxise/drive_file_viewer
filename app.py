@@ -2,17 +2,35 @@ from flask import Flask, render_template, request, jsonify, session, send_file, 
 from google_auth_oauthlib.flow import InstalledAppFlow, Flow
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
 from urllib.parse import urlparse, parse_qs
 import os
 import json
 import csv
-from io import StringIO
+from io import StringIO, BytesIO
 from datetime import datetime
 from dotenv import load_dotenv
 import threading
 import webbrowser
 import logging
 import sys
+import time
+
+# Import for GenAI model
+try:
+    from transformers import pipeline
+    SUMMARIZER_AVAILABLE = True
+    print("Transformers library is available. File summaries are enabled.")
+except ImportError:
+    SUMMARIZER_AVAILABLE = False
+    print("Transformers library not available. File summaries will be disabled.")
+    logging.warning("Transformers library not available. File summaries will be disabled.")
+    
+    # Create a dummy pipeline function for graceful degradation
+    def pipeline(*args, **kwargs):
+        print("Using dummy pipeline function")
+        return None
+
 
 # Set up logging to file
 logging.basicConfig(
@@ -25,6 +43,197 @@ logging.basicConfig(
 )
 
 load_dotenv()
+
+# Initialize the summarizer
+summarizer = None
+
+def initialize_summarizer():
+    """Initialize the text summarizer model."""
+    global summarizer
+    if SUMMARIZER_AVAILABLE and summarizer is None:
+        try:
+            print("Initializing file summarizer model...")
+            logging.info("Initializing file summarizer model...")
+            # Use a small, efficient model for summarization
+            summarizer = pipeline("summarization", model="facebook/bart-large-cnn", max_length=60, min_length=20)
+            print("Summarizer model initialized successfully.")
+            logging.info("Summarizer model initialized successfully.")
+            return True
+        except Exception as e:
+            print(f"Error initializing summarizer: {e}")
+            logging.error(f"Error initializing summarizer: {e}")
+            return False
+    return SUMMARIZER_AVAILABLE
+
+def recursive_summarize(text, file_name, max_length=900, depth=0, max_depth=3):
+    """Recursively summarize text until it's short enough."""
+    global summarizer
+    words = text.split()
+    
+    # Base case: text is short enough or max recursion depth reached
+    if len(words) <= max_length or depth >= max_depth:
+        logging.info(f"[Depth {depth}] Text length {len(words)} words is within limit or max depth reached")
+        try:
+            summary = summarizer(' '.join(words[:max_length]), max_length=25, min_length=10, do_sample=False)
+            if summary and len(summary) > 0:
+                result = summary[0]['summary_text']
+                logging.info(f"[Depth {depth}] Generated summary: {result}")
+                return result
+            return "Could not generate summary"
+        except Exception as e:
+            logging.error(f"[Depth {depth}] Error in final summarization: {e}")
+            return f"Could not summarize: {str(e)[:50]}"
+    
+    # Split text into chunks and summarize each
+    logging.info(f"[Depth {depth}] Text too long ({len(words)} words), splitting into chunks")
+    chunk_size = 800
+    chunks = []
+    
+    # Create chunks
+    for i in range(0, len(words), chunk_size):
+        chunk = ' '.join(words[i:i + chunk_size])
+        chunks.append(chunk)
+    
+    logging.info(f"[Depth {depth}] Split into {len(chunks)} chunks")
+    
+    # Summarize each chunk
+    chunk_summaries = []
+    for i, chunk in enumerate(chunks):
+        try:
+            logging.info(f"[Depth {depth}] Summarizing chunk {i+1}/{len(chunks)}")
+            summary = summarizer(chunk, max_length=25, min_length=10, do_sample=False)
+            if summary and len(summary) > 0:
+                chunk_summaries.append(summary[0]['summary_text'])
+                logging.info(f"[Depth {depth}] Chunk {i+1} summary: {summary[0]['summary_text'][:50]}...")
+            else:
+                logging.warning(f"[Depth {depth}] Could not summarize chunk {i+1}")
+        except Exception as e:
+            logging.error(f"[Depth {depth}] Error summarizing chunk {i+1}: {e}")
+            # Skip this chunk if there's an error
+            continue
+    
+    # If no summaries were generated, return an error
+    if not chunk_summaries:
+        logging.error(f"[Depth {depth}] No chunk summaries were generated")
+        return "Could not generate summary for any chunk"
+    
+    # Combine chunk summaries and recursively summarize
+    combined_text = ' '.join(chunk_summaries)
+    logging.info(f"[Depth {depth}] Combined {len(chunk_summaries)} chunk summaries, total length: {len(combined_text.split())} words")
+    
+    # Recursive call
+    return recursive_summarize(combined_text, file_name, max_length, depth + 1, max_depth)
+
+def generate_metadata_summary(file_name, file_type, file_size=None, created_date=None, modified_date=None):
+    """Generate a descriptive summary based on file metadata for non-text files."""
+    file_ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
+    
+    # Format file size if available
+    size_info = ""
+    if file_size:
+        # Convert bytes to appropriate unit
+        if file_size < 1024:
+            size_info = f"{file_size} bytes"
+        elif file_size < 1024 * 1024:
+            size_info = f"{file_size/1024:.1f} KB"
+        else:
+            size_info = f"{file_size/(1024*1024):.1f} MB"
+    
+    # Create summaries based on file type
+    if file_type.startswith('image/'):
+        return f"Image file{' (' + size_info + ')' if size_info else ''}."
+    
+    elif file_type.startswith('video/'):
+        return f"Video file{' (' + size_info + ')' if size_info else ''}."
+    
+    elif file_type.startswith('audio/'):
+        return f"Audio file{' (' + size_info + ')' if size_info else ''}."
+    
+    elif file_type == 'application/pdf':
+        return f"PDF document{' (' + size_info + ')' if size_info else ''}."
+    
+    elif file_type in ['application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet']:
+        return f"Excel spreadsheet{' (' + size_info + ')' if size_info else ''}."
+    
+    elif file_type in ['application/vnd.ms-powerpoint', 'application/vnd.openxmlformats-officedocument.presentationml.presentation']:
+        return f"PowerPoint presentation{' (' + size_info + ')' if size_info else ''}."
+    
+    elif file_type in ['application/zip', 'application/x-zip-compressed']:
+        return f"ZIP archive{' (' + size_info + ')' if size_info else ''}."
+    
+    else:
+        # Generic summary for other file types
+        return f"{file_ext.upper() if file_ext else 'Unknown'} file{' (' + size_info + ')' if size_info else ''}."
+
+def generate_file_summary(file_content, file_name, file_type=None, file_size=None, created_date=None, modified_date=None):
+    """Generate a summary for the given file content or metadata."""
+    global summarizer
+    
+    # Check if content is empty
+    content_length = len(file_content) if file_content else 0
+    logging.info(f"File {file_name} has {content_length} characters")
+    
+    if content_length == 0:
+        logging.warning(f"No content to summarize for {file_name}")
+        return "No content to summarize"
+    
+    # Determine file extension
+    file_ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
+    
+    # File types that don't have extractable text content
+    binary_extensions = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff', 'mp4', 'avi', 'mov', 
+                         'wmv', 'mp3', 'wav', 'ogg', 'pdf', 'zip', 'exe', 'dll']
+    
+    # Use metadata-based summary for binary files
+    if file_ext in binary_extensions or (file_type and not file_type.startswith('text/') and 
+                                        not 'document' in file_type and not 'sheet' in file_type):
+        return generate_metadata_summary(file_name, file_type or 'application/octet-stream', 
+                                        file_size, created_date, modified_date)
+    
+    # For text-based files, use the transformer model
+    if not SUMMARIZER_AVAILABLE:
+        logging.warning(f"Summary not available for {file_name} (model not installed)")
+        return "Summary not available (model not installed)"
+    
+    try:
+        # Initialize summarizer if not already done
+        if summarizer is None:
+            logging.info(f"Initializing summarizer for {file_name}...")
+            success = initialize_summarizer()
+            if not success:
+                logging.error(f"Failed to initialize summarizer for {file_name}")
+                return "Summary not available (model initialization failed)"
+        
+        # Clean the input text to remove any problematic characters
+        # Replace tabs, multiple spaces, and other whitespace with a single space
+        cleaned_content = ' '.join(file_content.split())
+        
+        # Use recursive summarization for long content
+        word_count = len(cleaned_content.split())
+        logging.info(f"File {file_name} has {word_count} words")
+        
+        max_direct_words = 900  # Maximum words for direct summarization
+        
+        if word_count > max_direct_words:
+            logging.info(f"Using recursive summarization for {file_name} ({word_count} words)")
+            return recursive_summarize(cleaned_content, file_name)
+        else:
+            # For shorter content, use direct summarization
+            logging.info(f"Using direct summarization for {file_name} ({word_count} words)")
+            summary = summarizer(cleaned_content, max_length=25, min_length=10, do_sample=False)
+            
+            if summary and len(summary) > 0:
+                summary_text = summary[0]['summary_text']
+                logging.info(f"Summary generated for {file_name}: {summary_text}")
+                return summary_text
+            else:
+                logging.warning(f"Could not generate summary for {file_name} - empty result")
+                return f"Could not generate summary for {file_name}"
+
+    except Exception as e:
+        logging.error(f"Error generating summary for {file_name}: {e}", exc_info=True)
+        return f"Error generating summary: {str(e)[:50]}"
+
 
 app = Flask(__name__)
 app.secret_key = os.getenv('FLASK_SECRET_KEY')
@@ -93,7 +302,41 @@ def get_folder_name(service, folder_id):
         print(f"Error getting folder name: {e}")
         return None
 
-def list_files_in_folder(credentials, folder_id):
+def download_file_content(service, file_id, mime_type):
+    """Download the content of a file from Google Drive."""
+    try:
+        logging.info(f"Attempting to download file {file_id} with mime type {mime_type}")
+        
+        if 'google-apps' in mime_type:
+            # For Google Docs, export as plain text
+            logging.debug(f"File {file_id} is a Google Doc, exporting as text/plain")
+            export_mime_type = 'text/plain'
+            response = service.files().export(fileId=file_id, mimeType=export_mime_type).execute()
+            content = response.decode('utf-8') if isinstance(response, bytes) else response
+            logging.info(f"Successfully exported Google Doc {file_id}, size: {len(content)} bytes")
+            return content
+        else:
+            # For regular files, download the content
+            logging.debug(f"File {file_id} is a regular file, downloading content")
+            request = service.files().get_media(fileId=file_id)
+            file_content = BytesIO()
+            downloader = MediaIoBaseDownload(file_content, request)
+            logging.debug(f"Downloader created for {file_id}")
+            
+            done = False
+            while not done:
+                logging.debug(f"Downloading chunk for {file_id}...")
+                status, done = downloader.next_chunk()
+                logging.debug(f"Download progress: {int(status.progress() * 100)}%")
+            
+            content = file_content.getvalue().decode('utf-8', errors='replace')
+            logging.info(f"Successfully downloaded file {file_id}, size: {len(content)} bytes")
+            return content
+    except Exception as e:
+        logging.error(f"Error downloading file {file_id}: {e}", exc_info=True)
+        return None
+
+def list_files_in_folder(credentials, folder_id, generate_summaries=False):
     """List all files and folders in the specified Google Drive folder."""
     try:
         logging.debug(f"===== LISTING FILES IN FOLDER =====\nFolder ID: {folder_id}")
@@ -126,46 +369,90 @@ def list_files_in_folder(credentials, folder_id):
             logging.error(f"Error accessing folder {folder_id}: {folder_error}")
             return {'error': f"Cannot access folder: {str(folder_error)}"}
             
-        # List files and folders
-        try:
-            query = f"'{folder_id}' in parents and trashed=false"
-            logging.debug(f"Querying Drive API with: {query}")
-            results = service.files().list(
-                q=query,
-                pageSize=100,
-                fields="files(id, name, mimeType, webViewLink, parents)",
-                supportsAllDrives=True,
-                includeItemsFromAllDrives=True
-            ).execute()
-        except Exception as list_error:
-            logging.error(f"Error listing files in folder {folder_id}: {list_error}")
-            return {'error': f"Error listing files: {str(list_error)}"}
-        logging.debug(f"Raw API results: {results}")
+        # List files in the folder
+        query = f"'{folder_id}' in parents and trashed=false"
+        results = service.files().list(
+            q=query,
+            pageSize=100,
+            fields="nextPageToken, files(id, name, mimeType, webViewLink, size)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
+        ).execute()
         
-        files = results.get('files', [])
-        logging.debug(f"Found {len(files)} files in folder {folder_id}")
+        items = results.get('files', [])
+        logging.debug(f"Found {len(items)} items in folder")
         
-        # Process files and folders
         processed_items = []
-        for item in files:
+        for item in items:
             is_folder = item['mimeType'] == 'application/vnd.google-apps.folder'
-            processed_items.append({
+            file_item = {
                 'id': item['id'],
                 'name': item['name'],
                 'type': 'folder' if is_folder else 'file',
-                'webViewLink': item['webViewLink'],
-                'parentId': item.get('parents', [None])[0]
-            })
-        logging.debug(f"Processed items: {processed_items}")
+                'mimeType': item['mimeType'],
+                'webViewLink': item.get('webViewLink', ''),
+                'size': item.get('size', '0')
+            }
+            
+            # Generate summary for files if requested and not a folder
+            if generate_summaries and not is_folder and SUMMARIZER_AVAILABLE:
+                try:
+                    # Get additional file metadata
+                    file_size = None
+                    created_date = None
+                    modified_date = None
+                    
+                    try:
+                        file_metadata = service.files().get(
+                            fileId=item['id'], 
+                            fields='size,createdTime,modifiedTime',
+                            supportsAllDrives=True
+                        ).execute()
+                        
+                        if 'size' in file_metadata:
+                            file_size = int(file_metadata['size'])
+                        if 'createdTime' in file_metadata:
+                            created_date = file_metadata['createdTime']
+                        if 'modifiedTime' in file_metadata:
+                            modified_date = file_metadata['modifiedTime']
+                    except Exception as e:
+                        logging.warning(f"Could not get detailed metadata for {item['name']}: {e}")
+                    
+                    # Download file content for summary generation
+                    logging.debug(f"Downloading content for {item['name']} (mime type: {item['mimeType']})")
+                    file_content = download_file_content(service, item['id'], item['mimeType'])
+                    
+                    # Generate summary for any file type
+                    summary = generate_file_summary(
+                        file_content, 
+                        item['name'], 
+                        item['mimeType'], 
+                        file_size, 
+                        created_date, 
+                        modified_date
+                    )
+                    file_item['summary'] = summary
+                    logging.info(f"Summary for {item['name']}: {summary[:100]}...")
+                    
+                except Exception as e:
+                    logging.error(f"Error generating summary for {item['name']}: {e}")
+                    file_item['summary'] = f"Error generating summary: {str(e)[:50]}"
+            elif not is_folder:
+                file_item['summary'] = "Summary generation disabled"
+                
+            processed_items.append(file_item)
+        
+        logging.debug(f"Processed items: {len(processed_items)}")
         
         # Sort items: folders first, then by name
         processed_items.sort(key=lambda x: (x['type'] != 'folder', x['name'].lower()))
-        logging.debug(f"Sorted items: {processed_items}")
         
         return {
             'items': processed_items,
             'folderName': folder_name,
-            'folderId': folder_id
+            'folderId': folder_id,
+            'summaries_enabled': generate_summaries and SUMMARIZER_AVAILABLE,
+            'summaries_available': SUMMARIZER_AVAILABLE
         }
     except Exception as e:
         logging.error(f"Error listing files: {e}", exc_info=True)
@@ -207,6 +494,7 @@ def list_files():
         # Get folder ID either from URL or direct ID
         folder_url = request.json.get('folder_url')
         folder_id = request.json.get('folder_id')
+        generate_summaries = request.json.get('generate_summaries', False)
         
         # If we have a URL, extract folder ID from it
         if folder_url:
@@ -254,7 +542,7 @@ def list_files():
             return jsonify({'auth_url': auth_url})
         
         print("Listing files...")
-        result = list_files_in_folder(credentials, folder_id)
+        result = list_files_in_folder(credentials, folder_id, generate_summaries)
         
         if 'error' in result:
             return jsonify({'error': result['error']})
