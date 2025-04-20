@@ -13,6 +13,7 @@ A Flask web application that allows users to view files and folders from their G
 - Responsive UI with modern design
 - Notes column in CSV exports for user annotations
 - High-performance summary caching system for instant CSV exports
+- Complete subfolder support in CSV exports
 
 ## Requirements
 
@@ -70,6 +71,7 @@ http://localhost:5006
    - Check the "Include summaries" option if desired
    - Click "Download" to get the CSV file
    - Summaries are cached for performance - no need to regenerate them
+   - All files from subfolders are automatically included in the export
 
 ## File Summary Feature
 
@@ -110,6 +112,7 @@ The application includes an AI-powered file summary feature that generates conci
 - **Concise Output**: All summaries are limited to a maximum of 25 words for quick scanning
 - **Error Handling**: Graceful fallbacks when summarization fails or when files cannot be accessed
 - **High-Performance Caching**: Summaries are cached on the server for instant reuse in CSV exports
+- **Complete Subfolder Support**: CSV exports include all files from both the root folder and all subfolders
 
 ### Requirements
 
@@ -140,12 +143,12 @@ python -m coverage report -m
   - `test_routes.py`: Tests for web routes and API endpoints
   - `test_csv_export.py`: Tests for CSV export functionality
   - `test_summary.py`: Tests for file summarization features
-  - `test_summary_caching.py`: Tests for the summary caching system
+  - `test_summary_caching.py`: Tests for the summary caching system and subfolder support in exports
 - `.coveragerc`: Configuration for code coverage analysis
 
 ## Code Coverage
 
-Current code coverage: 89%
+Current code coverage: 93%
 
 ### Test Suites
 
