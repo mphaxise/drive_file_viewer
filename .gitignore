@@ -3,6 +3,8 @@ __pycache__/
 *.py[cod]
 venv/
 *.pyc
+*.pickle
+temp/
 
 # Testing
 .coverage
