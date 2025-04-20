@@ -308,82 +308,36 @@ def get_folder_name(service, folder_id):
 def download_file_content(service, file_id, mime_type):
     """Download content from a Google Drive file."""
     try:
-        # Skip download for known binary file types that don't need content for summaries
-        file_ext = file_id.split('.')[-1].lower() if '.' in file_id else ''
-        binary_extensions = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tif', 'tiff', 'mp4', 'avi', 'mov', 
-                             'wmv', 'mp3', 'wav', 'ogg', 'pdf', 'zip', 'exe', 'dll']
+        logging.info(f"Attempting to download file {file_id} with mime type {mime_type}")
         
-        if file_ext in binary_extensions:
-            return f"Binary content (file extension: {file_ext})"
-            
-        # Handle Google Docs, Sheets, etc.
-        if mime_type.startswith('application/vnd.google-apps'):
-            # Map Google Docs types to export MIME types
-            export_mime_types = {
-                'application/vnd.google-apps.document': 'text/plain',
-                'application/vnd.google-apps.spreadsheet': 'text/csv',
-                'application/vnd.google-apps.presentation': 'text/plain',
-                'application/vnd.google-apps.drawing': 'text/plain',
-                'application/vnd.google-apps.script': 'application/json',
-                'application/vnd.google-apps.form': 'text/plain',
-            }
-            
-            # If mime_type is not in our mapping, don't attempt to export
-            if mime_type not in export_mime_types:
-                logging.info(f"Skipping unsupported Google Apps type: {mime_type}")
-                return f"Unsupported Google Apps type: {mime_type}"
-                
-            export_mime_type = export_mime_types.get(mime_type)
-            
-            try:
-                response = service.files().export(fileId=file_id, mimeType=export_mime_type).execute()
-                return response.decode('utf-8', errors='replace') if isinstance(response, bytes) else response
-            except Exception as e:
-                logging.error(f"Error exporting file {file_id}: {e}")
-                return f"Error exporting file: {str(e)[:100]}"
-                
-        # Handle binary files that can be downloaded directly
+        if 'google-apps' in mime_type:
+            # For Google Docs, export as plain text
+            logging.debug(f"File {file_id} is a Google Doc, exporting as text/plain")
+            export_mime_type = 'text/plain'
+            response = service.files().export(fileId=file_id, mimeType=export_mime_type).execute()
+            content = response.decode('utf-8') if isinstance(response, bytes) else response
+            logging.info(f"Successfully exported Google Doc {file_id}, size: {len(content)} bytes")
+            return content
         else:
-            # Skip download for large files or known binary types
-            if not mime_type.startswith('text/') and not mime_type in ['application/json', 'application/xml', 'application/javascript']:
-                logging.info(f"Skipping binary file download for mime type: {mime_type}")
-                return f"Binary content (mime type: {mime_type})"
-                
-            try:
-                request = service.files().get_media(fileId=file_id)
-                downloader = MediaIoBaseDownload(io.BytesIO(), request)
-                done = False
-                
-                # Only download the first chunk for large files
+            # For regular files, download the content
+            logging.debug(f"File {file_id} is a regular file, downloading content")
+            request = service.files().get_media(fileId=file_id)
+            file_content = BytesIO()
+            downloader = MediaIoBaseDownload(file_content, request)
+            logging.debug(f"Downloader created for {file_id}")
+            
+            done = False
+            while not done:
+                logging.debug(f"Downloading chunk for {file_id}...")
                 status, done = downloader.next_chunk()
-                content = downloader.io_base.getvalue()
-                
-                # If file is too large, don't download more
-                if not done and len(content) > 1024 * 1024:  # 1MB limit
-                    logging.info(f"File {file_id} is too large, using partial content")
-                    return f"Large binary content (partial, size: {len(content)} bytes)"
-                    
-                # Continue downloading if not done and not too large
-                while not done:
-                    status, done = downloader.next_chunk()
-                
-                content = downloader.io_base.getvalue()
-                
-                # Try to decode as text if it might be a text file
-                if mime_type.startswith('text/') or mime_type in ['application/json', 'application/xml', 'application/javascript']:
-                    try:
-                        return content.decode('utf-8', errors='replace')
-                    except UnicodeDecodeError:
-                        return f"Binary content (size: {len(content)} bytes)"
-                else:
-                    return f"Binary content (size: {len(content)} bytes)"
-            except Exception as e:
-                logging.error(f"Error downloading file {file_id}: {e}")
-                return f"Error downloading file: {str(e)[:100]}"
-                
+                logging.debug(f"Download progress: {int(status.progress() * 100)}%")
+            
+            content = file_content.getvalue().decode('utf-8', errors='replace')
+            logging.info(f"Successfully downloaded file {file_id}, size: {len(content)} bytes")
+            return content
     except Exception as e:
-        logging.error(f"Error downloading file {file_id}: {e}")
-        return f"Error downloading file: {str(e)[:100]}"
+        logging.error(f"Error downloading file {file_id}: {e}", exc_info=True)
+        return None
 
 def list_files_in_folder(credentials, folder_id, generate_summaries=False):
     """List all files and folders in the specified Google Drive folder."""
@@ -804,6 +758,7 @@ def export_csv():
         # Check if we already have the results in a temporary file
         reuse_summaries = False
         items = []
+        folder_name = "Root"
         
         if 'last_folder_result_id' in session and 'last_folder_id' in session:
             if session['last_folder_id'] == folder_id:
@@ -816,20 +771,29 @@ def export_csv():
                         with open(result_file, 'rb') as f:
                             last_result = pickle.load(f)
                         
-                        if include_summaries and 'items' in last_result:
-                            # Check if summaries exist in the stored results
-                            has_summaries = any('summary' in item for item in last_result['items'] if item['type'] == 'file')
+                        folder_name = last_result.get('folderName', 'Root')
+                        
+                        if 'items' in last_result:
+                            # For CSV export, we always want to use cached results if available
+                            # If summaries are requested, check if they exist
+                            has_summaries = not include_summaries or any(
+                                item.get('summary') and 
+                                item.get('summary') != "Summary generation disabled" and
+                                not item.get('summary', '').startswith("Error generating summary")
+                                for item in last_result['items'] if item.get('type') == 'file'
+                            )
+                            
                             if has_summaries:
-                                logging.info("Reusing existing summaries from temporary file")
+                                logging.info("Reusing existing results from temporary file")
                                 # Convert the items to the format expected by the CSV export
                                 for item in last_result['items']:
                                     if item['type'] == 'file':
                                         items.append({
-                                            'folder_path': last_result['folderName'],
+                                            'folder_path': folder_name,
                                             'name': item['name'],
                                             'is_folder': False,
                                             'webViewLink': item.get('webViewLink', ''),
-                                            'summary': item.get('summary', ''),
+                                            'summary': item.get('summary', '') if include_summaries else 'Summary generation disabled',
                                             'notes': ''
                                         })
                                 reuse_summaries = True
@@ -839,12 +803,15 @@ def export_csv():
                     reuse_summaries = False
         
         if not reuse_summaries:
-            logging.info("Generating new summaries for CSV export")
+            logging.info("Generating new file list for CSV export")
             creds = authenticate()
             service = build('drive', 'v3', credentials=creds)
             
+            # Get folder ID from the URL for the API call
+            folder_id_for_api = get_folder_id_from_url(folder_url) if folder_url else folder_id
+            
             # Get all files recursively with summaries if requested
-            items = get_all_files_recursive(service, folder_id, include_summaries=include_summaries)
+            items = get_all_files_recursive(service, folder_id_for_api, include_summaries=include_summaries)
         
         # Create CSV in memory
         import io

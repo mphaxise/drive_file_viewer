@@ -5,7 +5,8 @@ import pickle
 import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock, mock_open
-from app import app, TEMP_DIR
+from app import app, TEMP_DIR, get_all_files_recursive
+from io import StringIO
 
 class TestSummaryCaching(unittest.TestCase):
     """Test cases for the summary caching functionality."""
@@ -197,6 +198,204 @@ class TestSummaryCaching(unittest.TestCase):
         
         # Verify that get_all_files_recursive was called (summaries were regenerated)
         mock_get_all_files.assert_called_once()
+
+    def test_reuse_summaries_for_csv_export(self):
+        """Test that summaries are reused when exporting to CSV."""
+        # Mock session with cached result
+        with patch('app.session', {'last_folder_result_id': 'test_id', 'last_folder_id': 'folder_id'}):
+            # Mock the temporary file
+            mock_file = MagicMock()
+            mock_file.exists.return_value = True
+            with patch('app.TEMP_DIR') as mock_temp_dir:
+                mock_temp_dir.__truediv__.return_value = mock_file
+                
+                # Mock pickle.load to return cached results with valid summaries
+                cached_result = {
+                    'folderName': 'Test Folder',
+                    'items': [
+                        {
+                            'type': 'file',
+                            'name': 'test.txt',
+                            'webViewLink': 'https://example.com',
+                            'summary': 'This is a test summary'
+                        }
+                    ]
+                }
+                
+                # Create a StringIO object to capture the CSV output
+                output_buffer = StringIO()
+                
+                # Mock get_folder_id_from_url to return a consistent folder_id
+                with patch('app.get_folder_id_from_url', return_value='folder_id'):
+                    with patch('pickle.load', return_value=cached_result):
+                        with patch('builtins.open', mock_open()) as mock_file_open:
+                            # Mock send_file to capture the CSV content
+                            with patch('app.send_file') as mock_send_file:
+                                # Mock io.BytesIO to capture the CSV content
+                                with patch('io.BytesIO', return_value=output_buffer) as mock_bytes_io:
+                                    # Call export_csv
+                                    with app.test_request_context():
+                                        with patch('app.request', json={'folder_url': 'https://drive.google.com/drive/folders/folder_id', 'include_summaries': True}):
+                                            # Mock get_all_files_recursive to verify it's not called
+                                            with patch('app.get_all_files_recursive') as mock_get_files:
+                                                # Import the export_csv function directly
+                                                from app import export_csv
+                                                export_csv()
+                                                
+                                                # Verify that get_all_files_recursive was not called
+                                                mock_get_files.assert_not_called()
+                                            
+                                            # Verify that send_file was called
+                                            mock_send_file.assert_called_once()
+                                                
+    def test_get_all_files_recursive_with_cache(self):
+        """Test that get_all_files_recursive uses cached results when available."""
+        # Mock session with cached result
+        with patch('app.session', {'last_folder_result_id': 'test_id', 'last_folder_id': 'folder_id'}):
+            # Mock the temporary file
+            mock_file = MagicMock()
+            mock_file.exists.return_value = True
+            with patch('app.TEMP_DIR') as mock_temp_dir:
+                mock_temp_dir.__truediv__.return_value = mock_file
+                
+                # Mock pickle.load to return cached results with valid summaries
+                cached_result = {
+                    'folderName': 'Test Folder',
+                    'items': [
+                        {
+                            'type': 'file',
+                            'id': 'file1',
+                            'name': 'test.txt',
+                            'webViewLink': 'https://example.com',
+                            'summary': 'This is a test summary'
+                        },
+                        {
+                            'type': 'folder',
+                            'id': 'subfolder1',
+                            'name': 'Subfolder'
+                        }
+                    ]
+                }
+                
+                with patch('pickle.load', return_value=cached_result):
+                    with patch('builtins.open', mock_open()) as mock_file_open:
+                        # Set up mock for the service.files().list() call
+                        mock_service = MagicMock()
+                        mock_files = MagicMock()
+                        mock_service.files.return_value = mock_files
+                        mock_list = MagicMock()
+                        mock_files.list.return_value = mock_list
+                        
+                        # Mock the execute method to return empty results
+                        # This ensures we're using the cache, not the API
+                        mock_list.execute.return_value = {'files': []}
+                        
+                        # Create a mock for recursive calls to handle the subfolder
+                        subfolder_items = [{
+                            'folder_path': 'Root/Subfolder',
+                            'name': 'subfile.txt',
+                            'is_folder': False,
+                            'webViewLink': 'https://example.com/sub',
+                            'summary': 'Subfolder file summary',
+                            'notes': ''
+                        }]
+                        
+                        # We need to patch the recursive call separately
+                        with patch('app.get_all_files_recursive', return_value=subfolder_items) as mock_recursive:
+                            # Call the function directly
+                            result = get_all_files_recursive(mock_service, 'folder_id', include_summaries=True)
+                            
+                            # Verify that the recursive function was called for the subfolder
+                            mock_recursive.assert_called_once_with(
+                                mock_service, 'subfolder1', 'Root/Subfolder', True
+                            )
+                            
+                            # Verify we got the expected results
+                            # We should have the file from cache and the subfolder items
+                            self.assertEqual(len(result), 3)  # 1 file + 1 folder + 1 subfolder item
+                            
+                            # Check file names
+                            file_names = [item.get('name') for item in result]
+                            self.assertIn('test.txt', file_names)
+                            self.assertIn('subfile.txt', file_names)
+                            
+    def test_get_all_files_recursive_without_summaries(self):
+        """Test that get_all_files_recursive skips cache when summaries are not requested."""
+        # Mock session with cached result
+        with patch('app.session', {'last_folder_result_id': 'test_id', 'last_folder_id': 'folder_id'}):
+            # Set up mock service and files
+            mock_service = MagicMock()
+            mock_files = MagicMock()
+            mock_service.files.return_value = mock_files
+            mock_list = MagicMock()
+            mock_files.list.return_value = mock_list
+            
+            # Mock the execute method to return file results
+            mock_list.execute.return_value = {
+                'files': [
+                    {
+                        'id': 'file1',
+                        'name': 'test.txt',
+                        'mimeType': 'text/plain',
+                        'webViewLink': 'https://example.com'
+                    }
+                ]
+            }
+            
+            # Call the function without requesting summaries
+            from app import get_all_files_recursive
+            result = get_all_files_recursive(mock_service, 'folder_id', include_summaries=False)
+            
+            # Verify the results
+            self.assertEqual(len(result), 1)
+            self.assertEqual(result[0]['name'], 'test.txt')
+            self.assertEqual(result[0]['summary'], 'Summary generation disabled')
+            
+            # Verify the API was called (cache was not used)
+            mock_files.list.assert_called_once()
+            
+    def test_get_all_files_recursive_cache_error(self):
+        """Test that get_all_files_recursive handles cache errors gracefully."""
+        # Mock session with cached result
+        with patch('app.session', {'last_folder_result_id': 'test_id', 'last_folder_id': 'folder_id'}):
+            # Mock the temporary file
+            mock_file = MagicMock()
+            mock_file.exists.return_value = True
+            with patch('app.TEMP_DIR') as mock_temp_dir:
+                mock_temp_dir.__truediv__.return_value = mock_file
+                
+                # Mock pickle.load to raise an exception
+                with patch('pickle.load', side_effect=Exception('Test error')):
+                    with patch('builtins.open', mock_open()) as mock_file_open:
+                        # Set up mock service and files
+                        mock_service = MagicMock()
+                        mock_files = MagicMock()
+                        mock_service.files.return_value = mock_files
+                        mock_list = MagicMock()
+                        mock_files.list.return_value = mock_list
+                        
+                        # Mock the execute method to return file results
+                        mock_list.execute.return_value = {
+                            'files': [
+                                {
+                                    'id': 'file1',
+                                    'name': 'test.txt',
+                                    'mimeType': 'text/plain',
+                                    'webViewLink': 'https://example.com'
+                                }
+                            ]
+                        }
+                        
+                        # Call the function
+                        from app import get_all_files_recursive
+                        result = get_all_files_recursive(mock_service, 'folder_id', include_summaries=True)
+                        
+                        # Verify the results
+                        self.assertEqual(len(result), 1)
+                        self.assertEqual(result[0]['name'], 'test.txt')
+                        
+                        # Verify the API was called (fallback to API after cache error)
+                        mock_files.list.assert_called_once()
 
 if __name__ == '__main__':
     unittest.main()
