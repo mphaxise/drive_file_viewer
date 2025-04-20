@@ -1,4 +1,4 @@
-# Google Drive Viewer
+# Google Drive Viewer (v1.0)
 
 A Flask web application that allows users to view files and folders from their Google Drive by providing a folder URL.
 
@@ -149,6 +149,16 @@ python -m coverage report -m
 ## Code Coverage
 
 Current code coverage: 93%
+
+## Version History
+
+### v1.0 (April 20, 2025)
+- Initial stable release
+- Complete CSV export functionality with performance optimization
+- Summary caching system for instant CSV exports
+- Complete subfolder support in CSV exports
+- Concise file summaries (25 words max) for all file types
+- Code coverage: 93%
 
 ### Test Suites
 
