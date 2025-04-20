@@ -111,14 +111,15 @@ The application includes an AI-powered file summary feature that generates conci
 
 ### Running Tests
 
-Run tests with pytest:
+Run tests with unittest:
 ```bash
-python -m pytest
+python -m unittest discover tests
 ```
 
 Run tests with coverage:
 ```bash
-python -m pytest --cov=app --cov-report=term-missing
+python -m coverage run -m unittest discover tests
+python -m coverage report -m
 ```
 
 ### Project Structure
@@ -126,13 +127,43 @@ python -m pytest --cov=app --cov-report=term-missing
 - `app.py`: Main application file with Flask routes and Google Drive API integration
 - `templates/`: HTML templates for the web interface
 - `tests/`: Test directory
-  - `test_app.py`: Test suite for the core application
-  - `test_summary.py`: Test suite for the file summary feature
+  - `test_oauth.py`: Tests for OAuth and authentication flows
+  - `test_routes.py`: Tests for web routes and API endpoints
+  - `test_csv_export.py`: Tests for CSV export functionality
+  - `test_summary.py`: Tests for file summarization features
 - `.coveragerc`: Configuration for code coverage analysis
 
 ## Code Coverage
 
-Current code coverage: 75%
+Current code coverage: 89%
+
+### Test Suites
+
+- `test_oauth.py`: Tests for OAuth and authentication flows (100% coverage)
+- `test_routes.py`: Tests for web routes and API endpoints (100% coverage)
+- `test_csv_export.py`: Tests for CSV export functionality (97% coverage)
+- `test_summary.py`: Tests for file summarization features (100% coverage)
+
+### Testing Strategy
+
+The application follows a comprehensive testing strategy:
+
+1. **Unit Tests**: Testing individual functions and components in isolation
+2. **Integration Tests**: Testing interactions between components
+3. **Mock-based Testing**: Using mocks to simulate external dependencies like Google Drive API
+4. **Error Handling Tests**: Ensuring the application handles errors gracefully
+
+### Test Workflow
+
+When developing new features, follow this workflow:
+
+1. Create a feature branch from the stable master branch
+2. Implement the new feature with proper testing
+3. Ensure code coverage remains at or above 90%
+4. Document the new feature in the README
+5. Update dependencies if needed
+6. Run all tests before merging back to master
+7. Merge the feature branch back to master when ready
 
 ## License
 

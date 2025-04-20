@@ -52,8 +52,8 @@ class TestSummaryFeature(unittest.TestCase):
                 mock_pipeline.assert_called_once_with(
                     "summarization", 
                     model="facebook/bart-large-cnn", 
-                    max_length=60, 
-                    min_length=20
+                    max_length=25, 
+                    min_length=10
                 )
                 
                 # Verify the function returns True (success)

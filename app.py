@@ -20,21 +20,20 @@ import time
 try:
     from transformers import pipeline
     SUMMARIZER_AVAILABLE = True
-    print("Transformers library is available. File summaries are enabled.")
+    logging.info("Transformers library is available. File summaries are enabled.")
 except ImportError:
     SUMMARIZER_AVAILABLE = False
-    print("Transformers library not available. File summaries will be disabled.")
     logging.warning("Transformers library not available. File summaries will be disabled.")
     
     # Create a dummy pipeline function for graceful degradation
     def pipeline(*args, **kwargs):
-        print("Using dummy pipeline function")
+        logging.info("Using dummy pipeline function")
         return None
 
 
 # Set up logging to file
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[
         logging.FileHandler('drive_viewer.log', mode='w'),
@@ -52,15 +51,12 @@ def initialize_summarizer():
     global summarizer
     if SUMMARIZER_AVAILABLE and summarizer is None:
         try:
-            print("Initializing file summarizer model...")
             logging.info("Initializing file summarizer model...")
             # Use a small, efficient model for summarization
-            summarizer = pipeline("summarization", model="facebook/bart-large-cnn", max_length=60, min_length=20)
-            print("Summarizer model initialized successfully.")
+            summarizer = pipeline("summarization", model="facebook/bart-large-cnn", max_length=25, min_length=10)
             logging.info("Summarizer model initialized successfully.")
             return True
         except Exception as e:
-            print(f"Error initializing summarizer: {e}")
             logging.error(f"Error initializing summarizer: {e}")
             return False
     return SUMMARIZER_AVAILABLE
@@ -485,11 +481,8 @@ def authorize():
 
 @app.route('/list-files', methods=['POST'])
 def list_files():
-    print('[DEBUG] list_files: Session keys:', list(session.keys()), flush=True)
-    print('[DEBUG] list_files: Session token:', session.get('token'), flush=True)
     try:
-        print("\n=== Received list-files request ===")
-        print("Request data:", request.get_data(as_text=True))
+        logging.info("Received list-files request")
         
         # Get folder ID either from URL or direct ID
         folder_url = request.json.get('folder_url')
@@ -541,17 +534,17 @@ def list_files():
             logging.debug(f"Generated new state {state}.")
             return jsonify({'auth_url': auth_url})
         
-        print("Listing files...")
+        logging.info("Listing files...")
         result = list_files_in_folder(credentials, folder_id, generate_summaries)
         
         if 'error' in result:
             return jsonify({'error': result['error']})
             
-        print(f"Found {len(result['items'])} items in folder {result['folderName']}")
+        logging.info(f"Found {len(result['items'])} items in folder {result['folderName']}")
         return jsonify(result)
         
     except Exception as e:
-        print(f"Error in list_files: {str(e)}")
+        logging.error(f"Error in list_files: {str(e)}")
         return jsonify({'error': str(e)})
 
 def get_all_files_recursive(service, folder_id, folder_path="Root"):
@@ -609,8 +602,7 @@ def get_all_files_recursive(service, folder_id, folder_path="Root"):
 @app.route('/export-csv', methods=['POST'])
 def export_csv():
     """Export file list as CSV"""
-    print('[DEBUG] export_csv: Session keys:', list(session.keys()), flush=True)
-    print('[DEBUG] export_csv: Session token:', session.get('token'), flush=True)
+    logging.info("Received export-csv request")
     try:
         folder_url = request.json.get('folder_url')
         if not folder_url:
@@ -658,7 +650,7 @@ def export_csv():
         )
         
     except Exception as e:
-        print(f"Error exporting CSV: {e}")
+        logging.error(f"Error exporting CSV: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/oauth2callback')
@@ -695,10 +687,7 @@ def oauth2callback():
         session['token'] = token_json
         logging.debug(f"Token saved to session. Keys: {list(session.keys())}")
         
-        # Export token to debug_token.json for testing
-        with open('debug_token.json', 'w') as f:
-            f.write(token_json)
-        logging.debug("Exported token to debug_token.json successfully")
+        # Token saved to session
         
         # Return HTML with JavaScript to close the window and notify the opener
         return """<html><head><script>
@@ -711,48 +700,4 @@ def oauth2callback():
 
 if __name__ == '__main__':
     os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'  # For development only
-    # --- DEBUG: Run Drive API query directly ---
-    try:
-        from google.oauth2.credentials import Credentials
-        import json
-        logging.debug("Starting manual Drive API test")
-        
-        # Load credentials from file for testing
-        if os.path.exists('debug_token.json'):
-            with open('debug_token.json') as f:
-                token_data = json.loads(f.read())
-                logging.debug(f"Loaded token data from debug_token.json")
-            
-            creds = Credentials(
-                token=token_data['token'],
-                refresh_token=token_data['refresh_token'],
-                token_uri=token_data['token_uri'],
-                client_id=token_data['client_id'],
-                client_secret=token_data['client_secret'],
-                scopes=token_data['scopes']
-            )
-            logging.debug("Successfully created credentials from token file")
-            service = build('drive', 'v3', credentials=creds)
-            # Test both folder IDs to see which one works
-            folder_ids = [
-                '17j90tqpf39MPepHfGFztOSUX6py4tIQ8',  # Original folder ID
-                '194Cfu68_w6qhGtqR7MHhhvncNFzY0X78'   # New folder ID from screenshot
-            ]
-            
-            for folder_id in folder_ids:
-                query = f"'{folder_id}' in parents and trashed=false"
-                print(f"[DEBUG] Running manual Drive API query: {query}", flush=True)
-                results = service.files().list(
-                    q=query,
-                    pageSize=100,
-                    fields="files(id, name, mimeType, webViewLink, parents)",
-                    supportsAllDrives=True,
-                    includeItemsFromAllDrives=True
-                ).execute()
-                print(f"[DEBUG] Manual query results for folder {folder_id}: {json.dumps(results, indent=2)}", flush=True)
-        else:
-            print("[DEBUG] No debug_token.json found. Please export your token for standalone testing.", flush=True)
-    except Exception as e:
-        print(f"[ERROR] Manual Drive API test failed: {e}", flush=True)
-    # --- END DEBUG ---
     app.run(port=PORT, debug=True)
