@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Google Drive Viewer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen p-8">
+    <div class="max-w-6xl mx-auto space-y-8">
+        <div class="text-center">
+            <h1 class="text-3xl font-bold mb-4">Google Drive Viewer</h1>
+            <p class="text-gray-600 mb-8">View files and folders from your Google Drive</p>
+        </div>
+
+        <!-- Input form -->
+        <div class="bg-white rounded-lg shadow-md p-6">
+            <form id="folderForm" class="space-y-4">
+                <div>
+                    <label for="folderUrl" class="block text-sm font-medium text-gray-700 mb-2">Google Drive Folder URL</label>
+                    <input
+                        type="text"
+                        id="folderUrl"
+                        name="folderUrl"
+                        placeholder="https://drive.google.com/drive/folders/..."
+                        class="w-full px-4 py-2 rounded-md border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        required
+                    >
+                </div>
+                <button
+                    type="submit"
+                    id="viewFiles"
+                    class="w-full bg-blue-500 hover:bg-blue-600 text-white font-medium py-2 px-4 rounded-md transition-colors"
+                >
+                    View Files
+                </button>
+            </form>
+        </div>
+
+        <!-- Loading indicator -->
+        <div id="loading" class="hidden flex items-center justify-center p-8">
+            <div class="flex flex-col items-center">
+                <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+                <p class="mt-2 text-gray-600">Loading...</p>
+            </div>
+        </div>
+
+        <!-- Error message -->
+        <div id="error" class="hidden bg-white rounded-lg shadow-md p-6">
+            <p id="errorMessage" class="text-red-500"></p>
+        </div>
+
+        <!-- Results section -->
+        <div id="results" class="hidden bg-white rounded-lg shadow-md p-6">
+            <div id="breadcrumbs" class="text-sm text-gray-600 mb-4"></div>
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-lg font-semibold">Files and Folders</h2>
+                <button id="exportCsv" class="bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded-md text-sm flex items-center">
+                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                    </svg>
+                    Export to CSV
+                </button>
+            </div>
+            <div id="fileList" class="space-y-2"></div>
+        </div>
+    </div>
+
+    <script>
+        // Helper: escape HTML
+        function escapeHtml(text) {
+            const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
+            return text.replace(/[&<>"']/g, m => map[m]);
+        }
+
+        // Show/hide helpers
+        function show(el) { el.classList.remove('hidden'); }
+        function hide(el) { el.classList.add('hidden'); }
+
+        // Global state
+        const folderHistory = [];
+        let currentFolderId = null;
+        let currentFolderUrl = '';
+        let currentFolderName = '';
+        
+        // Handle authentication message from popup window
+        window.addEventListener('message', function(event) {
+            if (event.data === 'authentication_complete') {
+                console.log('Authentication completed, reloading folder');
+                // Reload the folder with the last requested URL/ID
+                loadFolder(currentFolderId, currentFolderUrl);
+            }
+        }, false);
+        
+        // Load folder contents
+        async function loadFolder(folderId, folderUrl = null) {
+            console.log('Loading folder:', { folderId, folderUrl });
+            const loading = document.getElementById('loading');
+            const results = document.getElementById('results');
+            const error = document.getElementById('error');
+            
+            hide(error);
+            hide(results);
+            show(loading);
+            
+            try {
+                const response = await fetch('/list-files', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        folder_url: folderUrl,
+                        folder_id: folderId
+                    })
+                });
+                
+                const data = await response.json();
+                console.log('Received response:', data);
+                
+                if (data.error) {
+                    document.getElementById('errorMessage').textContent = data.error;
+                    show(error);
+                } else if (data.auth_url) {
+                    // Save current request for after authentication
+                    currentFolderId = folderId;
+                    currentFolderUrl = folderUrl;
+                    
+                    // Open authentication window
+                    const width = 600;
+                    const height = 700;
+                    const left = (screen.width - width) / 2;
+                    const top = (screen.height - height) / 2;
+                    window.open(data.auth_url, 'oauth', 
+                        `width=${width},height=${height},left=${left},top=${top}`);
+                } else if (data.items) {
+                    // Update navigation history
+                    if (currentFolderId && !folderHistory.includes(currentFolderId)) {
+                        folderHistory.push(currentFolderId);
+                    }
+                    
+                    // Update current folder
+                    currentFolderId = data.folderId;
+                    currentFolderName = data.folderName;
+                    
+                    // Create breadcrumb
+                    const breadcrumbHtml = `
+                        <div class="flex items-center space-x-2">
+                            ${folderHistory.length > 0 ? `
+                                <button onclick="navigateBack()" 
+                                        class="text-blue-600 hover:text-blue-800">
+                                    ← Back
+                                </button>
+                                <span class="text-gray-500">|</span>
+                            ` : ''}
+                            <span class="font-medium">${escapeHtml(data.folderName || 'Root')}</span>
+                        </div>
+                    `;
+                    
+                    // Create folders list
+                    const folders = data.items.filter(item => item.type === 'folder');
+                    const files = data.items.filter(item => item.type === 'file');
+                    
+                    const foldersHtml = folders.length > 0 ? `
+                        <div class="mb-4">
+                            <h3 class="text-sm font-medium text-gray-500 mb-2">Folders</h3>
+                            <div class="space-y-2">
+                                ${folders.map(folder => `
+                                    <button 
+                                        onclick="loadFolder('${folder.id}')" 
+                                        class="flex items-center w-full p-2 hover:bg-gray-50 rounded-md border border-gray-200"
+                                    >
+                                        <svg class="w-5 h-5 mr-2 text-yellow-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path>
+                                        </svg>
+                                        <span class="flex-1 truncate">${escapeHtml(folder.name)}</span>
+                                    </button>
+                                `).join('')}
+                            </div>
+                        </div>
+                    ` : '';
+                    
+                    // Create files list
+                    const filesHtml = files.length > 0 ? `
+                        <div>
+                            <h3 class="text-sm font-medium text-gray-500 mb-2">Files</h3>
+                            <div class="space-y-2">
+                                ${files.map(file => `
+                                    <a 
+                                        href="${file.webViewLink}" 
+                                        target="_blank"
+                                        class="flex items-center w-full p-2 hover:bg-gray-50 rounded-md border border-gray-200"
+                                    >
+                                        <svg class="w-5 h-5 mr-2 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                                        </svg>
+                                        <span class="flex-1 truncate">${escapeHtml(file.name)}</span>
+                                    </a>
+                                `).join('')}
+                            </div>
+                        </div>
+                    ` : '';
+                    
+                    // Create empty state message
+                    const emptyHtml = data.items.length === 0 ? 
+                        '<p class="text-gray-500 text-center">This folder is empty</p>' : '';
+                    
+                    // Update the UI
+                    document.getElementById('breadcrumbs').innerHTML = breadcrumbHtml;
+                    document.getElementById('fileList').innerHTML = `${foldersHtml}${filesHtml}${emptyHtml}`;
+                    show(results);
+                }
+            } catch (err) {
+                console.error('Error:', err);
+                document.getElementById('errorMessage').textContent = err.message;
+                show(error);
+            } finally {
+                hide(loading);
+            }
+        }
+        
+        // Navigate back to previous folder
+        function navigateBack() {
+            if (folderHistory.length > 0) {
+                const previousFolderId = folderHistory.pop();
+                loadFolder(previousFolderId);
+            }
+        }
+        
+        // Handle CSV export
+        async function handleExportCsv() {
+            try {
+                const folderUrl = document.getElementById('folderUrl').value;
+                const loading = document.getElementById('loading');
+                const error = document.getElementById('error');
+                
+                hide(error);
+                show(loading);
+                
+                const response = await fetch('/export-csv', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ folder_url: folderUrl })
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to generate CSV');
+                }
+                
+                // Get the blob from the response
+                const blob = await response.blob();
+                
+                // Create a download link
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = response.headers.get('content-disposition').split('filename=')[1];
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+                
+            } catch (err) {
+                console.error('Error exporting CSV:', err);
+                document.getElementById('errorMessage').textContent = 'Failed to export CSV: ' + err.message;
+                show(error);
+            } finally {
+                hide(loading);
+            }
+        }
+        
+        // Handle form submission
+        document.getElementById('folderForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const folderUrl = document.getElementById('folderUrl').value;
+            loadFolder(null, folderUrl);
+        });
+        
+        // Add event listener for export button
+        document.getElementById('exportCsv').addEventListener('click', handleExportCsv);
+    </script>
+</body>
+</html>
