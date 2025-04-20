@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, session, send_file, url_for
+from flask import Flask, render_template, request, jsonify, session, send_file, redirect, url_for
 from google_auth_oauthlib.flow import InstalledAppFlow, Flow
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -15,6 +15,10 @@ import webbrowser
 import logging
 import sys
 import time
+import tempfile
+import uuid
+import pickle
+from pathlib import Path
 
 # Import for GenAI model
 try:
@@ -230,11 +234,14 @@ def generate_file_summary(file_content, file_name, file_type=None, file_size=Non
         logging.error(f"Error generating summary for {file_name}: {e}", exc_info=True)
         return f"Error generating summary: {str(e)[:50]}"
 
-
+# Initialize Flask app
 app = Flask(__name__)
-app.secret_key = os.getenv('FLASK_SECRET_KEY')
-if not app.secret_key:
-    raise ValueError('FLASK_SECRET_KEY environment variable is not set')
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'dev_key_for_testing')
+PORT = 5006
+
+# Create a temp directory for storing summaries
+TEMP_DIR = Path(tempfile.gettempdir()) / 'drive_viewer_summaries'
+TEMP_DIR.mkdir(exist_ok=True)
 
 # Configure Google OAuth2
 CLIENT_SECRETS_FILE = "credentials.json"
@@ -539,6 +546,19 @@ def list_files():
         
         if 'error' in result:
             return jsonify({'error': result['error']})
+        
+        # Store the result in a temporary file for later use in CSV export
+        # Generate a unique ID for this result
+        result_id = str(uuid.uuid4())
+        
+        # Store just the ID in the session
+        session['last_folder_result_id'] = result_id
+        session['last_folder_id'] = folder_id
+        
+        # Save the result to a temporary file
+        result_file = TEMP_DIR / f"{result_id}.pickle"
+        with open(result_file, 'wb') as f:
+            pickle.dump(result, f)
             
         logging.info(f"Found {len(result['items'])} items in folder {result['folderName']}")
         return jsonify(result)
@@ -547,7 +567,7 @@ def list_files():
         logging.error(f"Error in list_files: {str(e)}")
         return jsonify({'error': str(e)})
 
-def get_all_files_recursive(service, folder_id, folder_path="Root"):
+def get_all_files_recursive(service, folder_id, folder_path="Root", include_summaries=False):
     """Recursively get all files and folders from Google Drive"""
     items = []
     page_token = None
@@ -578,23 +598,74 @@ def get_all_files_recursive(service, folder_id, folder_path="Root"):
                     sub_items = get_all_files_recursive(
                         service,
                         item['id'],
-                        f"{folder_path}/{item['name']}"
+                        f"{folder_path}/{item['name']}",
+                        include_summaries
                     )
                     items.extend(sub_items)
                 else:
-                    items.append({
+                    file_item = {
                         'folder_path': folder_path,
                         'name': item['name'],
                         'is_folder': False,
-                        'webViewLink': item.get('webViewLink', '')
-                    })
+                        'webViewLink': item.get('webViewLink', ''),
+                        'id': item['id'],
+                        'mimeType': item['mimeType']
+                    }
+                    
+                    # Generate summary if requested
+                    if include_summaries and SUMMARIZER_AVAILABLE:
+                        try:
+                            # Get additional file metadata
+                            file_size = None
+                            created_date = None
+                            modified_date = None
+                            
+                            try:
+                                file_metadata = service.files().get(
+                                    fileId=item['id'], 
+                                    fields='size,createdTime,modifiedTime',
+                                    supportsAllDrives=True
+                                ).execute()
+                                
+                                if 'size' in file_metadata:
+                                    file_size = int(file_metadata['size'])
+                                if 'createdTime' in file_metadata:
+                                    created_date = file_metadata['createdTime']
+                                if 'modifiedTime' in file_metadata:
+                                    modified_date = file_metadata['modifiedTime']
+                            except Exception as e:
+                                logging.warning(f"Could not get detailed metadata for {item['name']}: {e}")
+                            
+                            # Download file content for summary generation
+                            file_content = download_file_content(service, item['id'], item['mimeType'])
+                            
+                            # Generate summary for any file type
+                            summary = generate_file_summary(
+                                file_content, 
+                                item['name'], 
+                                item['mimeType'], 
+                                file_size, 
+                                created_date, 
+                                modified_date
+                            )
+                            file_item['summary'] = summary
+                        except Exception as e:
+                            logging.error(f"Error generating summary for {item['name']}: {e}")
+                            file_item['summary'] = f"Error generating summary: {str(e)[:50]}"
+                    elif not include_summaries:
+                        file_item['summary'] = "Summary generation disabled"
+                    
+                    # Add empty notes field
+                    file_item['notes'] = ""
+                    
+                    items.append(file_item)
             
             page_token = results.get('nextPageToken')
             if not page_token:
                 break
                 
         except Exception as e:
-            print(f"Error getting files: {e}")
+            logging.error(f"Error getting files: {e}")
             break
             
     return items
@@ -612,19 +683,61 @@ def export_csv():
         if not folder_id:
             return jsonify({'error': 'Invalid folder URL'}), 400
             
-        creds = authenticate()
-        service = build('drive', 'v3', credentials=creds)
+        # Check if summaries should be included
+        include_summaries = request.json.get('include_summaries', False)
         
-        # Get all files recursively
-        items = get_all_files_recursive(service, folder_id)
+        # Check if we already have the results in a temporary file
+        reuse_summaries = False
+        items = []
+        
+        if 'last_folder_result_id' in session and 'last_folder_id' in session:
+            if session['last_folder_id'] == folder_id:
+                try:
+                    # Try to use the stored results from the temporary file
+                    result_id = session['last_folder_result_id']
+                    result_file = TEMP_DIR / f"{result_id}.pickle"
+                    
+                    if result_file.exists():
+                        with open(result_file, 'rb') as f:
+                            last_result = pickle.load(f)
+                        
+                        if include_summaries and 'items' in last_result:
+                            # Check if summaries exist in the stored results
+                            has_summaries = any('summary' in item for item in last_result['items'] if item['type'] == 'file')
+                            if has_summaries:
+                                logging.info("Reusing existing summaries from temporary file")
+                                # Convert the items to the format expected by the CSV export
+                                for item in last_result['items']:
+                                    if item['type'] == 'file':
+                                        items.append({
+                                            'folder_path': last_result['folderName'],
+                                            'name': item['name'],
+                                            'is_folder': False,
+                                            'webViewLink': item.get('webViewLink', ''),
+                                            'summary': item.get('summary', ''),
+                                            'notes': ''
+                                        })
+                                reuse_summaries = True
+                except Exception as e:
+                    logging.error(f"Error reusing summaries: {e}")
+                    # Fall back to regenerating summaries
+                    reuse_summaries = False
+        
+        if not reuse_summaries:
+            logging.info("Generating new summaries for CSV export")
+            creds = authenticate()
+            service = build('drive', 'v3', credentials=creds)
+            
+            # Get all files recursively with summaries if requested
+            items = get_all_files_recursive(service, folder_id, include_summaries=include_summaries)
         
         # Create CSV in memory
         import io
         output = io.StringIO()
         writer = csv.writer(output)
         
-        # Write header
-        writer.writerow(['Number', 'Folder Name', 'File Name', 'File URL'])
+        # Write header with additional columns for summary and notes
+        writer.writerow(['Number', 'Folder Name', 'File Name', 'File URL', 'Summary', 'Notes'])
         
         # Write items
         for i, item in enumerate(items, 1):
@@ -633,7 +746,9 @@ def export_csv():
                     i,
                     item['folder_path'],
                     item['name'],
-                    item.get('webViewLink', '')
+                    item.get('webViewLink', ''),
+                    item.get('summary', ''),
+                    item.get('notes', '')
                 ])
         
         # Convert StringIO to BytesIO for send_file

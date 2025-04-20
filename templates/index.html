@@ -61,12 +61,23 @@
                         <label for="enableSummaries" class="text-sm text-gray-700">Generate Summaries</label>
                         <span id="summaryStatus" class="ml-2 text-xs text-red-500 hidden">(Library not available)</span>
                     </div>
-                    <button id="exportCsv" class="bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded-md text-sm flex items-center">
-                        <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-                        </svg>
-                        Export to CSV
-                    </button>
+                    <div class="relative">
+                        <button id="exportCsv" class="bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded-md text-sm flex items-center">
+                            <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                            </svg>
+                            Export to CSV
+                        </button>
+                        <div id="csvOptions" class="hidden absolute right-0 mt-2 w-64 bg-white rounded-md shadow-lg z-10 p-3 border border-gray-200">
+                            <div class="mb-2">
+                                <input type="checkbox" id="includeSummariesCsv" class="mr-2">
+                                <label for="includeSummariesCsv" class="text-sm text-gray-700">Include summaries</label>
+                            </div>
+                            <div class="flex justify-end">
+                                <button id="downloadCsv" class="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded-md text-sm">Download</button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
             <div id="fileList" class="space-y-2"></div>
@@ -352,10 +363,17 @@
             }
         }
         
+        // Toggle CSV options panel
+        function toggleCsvOptions() {
+            const csvOptions = document.getElementById('csvOptions');
+            csvOptions.classList.toggle('hidden');
+        }
+        
         // Handle CSV export
         async function handleExportCsv() {
             try {
                 const folderUrl = document.getElementById('folderUrl').value;
+                const includeSummaries = document.getElementById('includeSummariesCsv').checked;
                 const loading = document.getElementById('loading');
                 const error = document.getElementById('error');
                 
@@ -367,7 +385,10 @@
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ folder_url: folderUrl })
+                    body: JSON.stringify({ 
+                        folder_url: folderUrl,
+                        include_summaries: includeSummaries
+                    })
                 });
                 
                 if (!response.ok) {
@@ -387,6 +408,9 @@
                 window.URL.revokeObjectURL(url);
                 document.body.removeChild(a);
                 
+                // Hide the options panel
+                document.getElementById('csvOptions').classList.add('hidden');
+                
             } catch (err) {
                 console.error('Error exporting CSV:', err);
                 document.getElementById('errorMessage').textContent = 'Failed to export CSV: ' + err.message;
@@ -404,7 +428,8 @@
         });
         
         // Add event listener for export button
-        document.getElementById('exportCsv').addEventListener('click', handleExportCsv);
+        document.getElementById('exportCsv').addEventListener('click', toggleCsvOptions);
+        document.getElementById('downloadCsv').addEventListener('click', handleExportCsv);
         
         // Add event listener for the Generate Summaries checkbox
         document.getElementById('enableSummaries').addEventListener('change', function() {

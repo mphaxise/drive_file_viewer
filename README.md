@@ -6,11 +6,13 @@ A Flask web application that allows users to view files and folders from their G
 
 - View files and folders from Google Drive
 - Authentication via Google OAuth2
-- Export file listings to CSV
+- Export file listings to CSV with optional summaries and notes
 - Generate comprehensive file summaries for all file types using AI
 - Recursive summarization for long documents
 - Metadata-based summaries for non-text files
 - Responsive UI with modern design
+- Notes column in CSV exports for user annotations
+- High-performance summary caching system for instant CSV exports
 
 ## Requirements
 
@@ -63,9 +65,15 @@ http://localhost:5006
 
 5. Browse your files and folders
 
+6. Export files to CSV with optional summaries and notes:
+   - Click the "Export to CSV" button
+   - Check the "Include summaries" option if desired
+   - Click "Download" to get the CSV file
+   - Summaries are cached for performance - no need to regenerate them
+
 ## File Summary Feature
 
-The application includes an AI-powered file summary feature that generates concise summaries for all file types in your Google Drive.
+The application includes an AI-powered file summary feature that generates concise summaries for all file types in your Google Drive. These summaries are cached for performance and can be included in CSV exports.
 
 ### How It Works
 
@@ -101,6 +109,7 @@ The application includes an AI-powered file summary feature that generates conci
 - **Metadata-based Summaries**: Generates descriptive summaries for non-text files based on file type, size, and other metadata
 - **Concise Output**: All summaries are limited to a maximum of 25 words for quick scanning
 - **Error Handling**: Graceful fallbacks when summarization fails or when files cannot be accessed
+- **High-Performance Caching**: Summaries are cached on the server for instant reuse in CSV exports
 
 ### Requirements
 
@@ -131,6 +140,7 @@ python -m coverage report -m
   - `test_routes.py`: Tests for web routes and API endpoints
   - `test_csv_export.py`: Tests for CSV export functionality
   - `test_summary.py`: Tests for file summarization features
+  - `test_summary_caching.py`: Tests for the summary caching system
 - `.coveragerc`: Configuration for code coverage analysis
 
 ## Code Coverage
@@ -143,6 +153,7 @@ Current code coverage: 89%
 - `test_routes.py`: Tests for web routes and API endpoints (100% coverage)
 - `test_csv_export.py`: Tests for CSV export functionality (97% coverage)
 - `test_summary.py`: Tests for file summarization features (100% coverage)
+- `test_summary_caching.py`: Tests for the summary caching system (100% coverage)
 
 ### Testing Strategy
 
