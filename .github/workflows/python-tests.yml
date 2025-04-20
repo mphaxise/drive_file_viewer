@@ -1,0 +1,50 @@
+name: Python Tests
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.8, 3.9, '3.10']
+
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        pip install pytest pytest-cov
+    
+    - name: Create dummy credentials file
+      run: |
+        echo '{"web":{"client_id":"dummy","project_id":"dummy","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token","auth_provider_x509_cert_url":"https://www.googleapis.com/oauth2/v1/certs","client_secret":"dummy","redirect_uris":["http://127.0.0.1:5006/oauth2callback"]}}' > credentials.json
+    
+    - name: Create .env file
+      run: |
+        echo "FLASK_SECRET_KEY=dummy_secret_key_for_testing" > .env
+    
+    - name: Run tests
+      run: |
+        python -m pytest --cov=app
+    
+    - name: Generate coverage report
+      run: |
+        python -m pytest --cov=app --cov-report=xml
+    
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        fail_ci_if_error: false
