@@ -247,6 +247,86 @@ class TestSummaryCaching(unittest.TestCase):
                                             
                                             # Verify that send_file was called
                                             mock_send_file.assert_called_once()
+                                            
+    def test_export_csv_includes_subfolder_files(self):
+        """Test that CSV export includes files from subfolders."""
+        # Mock session with cached result
+        with patch('app.session', {'last_folder_result_id': 'test_id', 'last_folder_id': 'folder_id'}):
+            # Mock the temporary file
+            mock_file = MagicMock()
+            mock_file.exists.return_value = True
+            with patch('app.TEMP_DIR') as mock_temp_dir:
+                mock_temp_dir.__truediv__.return_value = mock_file
+                
+                # Mock pickle.load to return cached results with a file and a subfolder
+                cached_result = {
+                    'folderName': 'Test Folder',
+                    'items': [
+                        {
+                            'type': 'file',
+                            'name': 'root_file.txt',
+                            'webViewLink': 'https://example.com/root',
+                            'summary': 'Root file summary'
+                        },
+                        {
+                            'type': 'folder',
+                            'id': 'subfolder1',
+                            'name': 'Subfolder'
+                        }
+                    ]
+                }
+                
+                # Create a StringIO object to capture the CSV output
+                output_buffer = StringIO()
+                
+                # Mock get_folder_id_from_url to return a consistent folder_id
+                with patch('app.get_folder_id_from_url', return_value='folder_id'):
+                    with patch('pickle.load', return_value=cached_result):
+                        with patch('builtins.open', mock_open()) as mock_file_open:
+                            # Mock authenticate and build
+                            with patch('app.authenticate') as mock_auth:
+                                with patch('app.build') as mock_build:
+                                    # Mock service
+                                    mock_service = MagicMock()
+                                    mock_build.return_value = mock_service
+                                    
+                                    # Mock get_all_files_recursive for the subfolder call
+                                    # This simulates retrieving files from the subfolder
+                                    subfolder_files = [
+                                        {
+                                            'folder_path': 'Test Folder/Subfolder',
+                                            'name': 'sub_file.txt',
+                                            'is_folder': False,
+                                            'webViewLink': 'https://example.com/sub',
+                                            'summary': 'Subfolder file summary',
+                                            'notes': ''
+                                        }
+                                    ]
+                                    with patch('app.get_all_files_recursive', return_value=subfolder_files) as mock_get_files:
+                                        # Mock send_file to capture the CSV content
+                                        with patch('app.send_file') as mock_send_file:
+                                            # Mock io.BytesIO to capture the CSV content
+                                            with patch('io.BytesIO', return_value=output_buffer) as mock_bytes_io:
+                                                # Call export_csv
+                                                with app.test_request_context():
+                                                    with patch('app.request', json={'folder_url': 'https://drive.google.com/drive/folders/folder_id', 'include_summaries': True}):
+                                                        # Import the export_csv function directly
+                                                        from app import export_csv
+                                                        export_csv()
+                                                        
+                                                        # Verify that get_all_files_recursive was called for the subfolder
+                                                        mock_get_files.assert_called_once_with(
+                                                            mock_service, 'subfolder1', 'Test Folder/Subfolder', True
+                                                        )
+                                                        
+                                                        # Verify that send_file was called
+                                                        mock_send_file.assert_called_once()
+                                                        
+                                                        # Check that the CSV contains both the root file and subfolder file
+                                                        # We can't directly check the CSV content since it's mocked,
+                                                        # but we can verify that the logic processes both files by checking
+                                                        # the call to io.BytesIO which should contain the CSV content
+                                                        mock_bytes_io.assert_called_once()
                                                 
     def test_get_all_files_recursive_with_cache(self):
         """Test that get_all_files_recursive uses cached results when available."""

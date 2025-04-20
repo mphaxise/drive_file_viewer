@@ -786,8 +786,9 @@ def export_csv():
                             if has_summaries:
                                 logging.info("Reusing existing results from temporary file")
                                 # Convert the items to the format expected by the CSV export
+                                # First, extract all file items directly
                                 for item in last_result['items']:
-                                    if item['type'] == 'file':
+                                    if item.get('type') == 'file':
                                         items.append({
                                             'folder_path': folder_name,
                                             'name': item['name'],
@@ -796,6 +797,27 @@ def export_csv():
                                             'summary': item.get('summary', '') if include_summaries else 'Summary generation disabled',
                                             'notes': ''
                                         })
+                                
+                                # Now we need to get files from subfolders
+                                # Since we don't store the full hierarchy in the cache,
+                                # we'll need to make API calls for the subfolders
+                                creds = authenticate()
+                                service = build('drive', 'v3', credentials=creds)
+                                
+                                # Process all folder items
+                                for item in last_result['items']:
+                                    if item.get('type') == 'folder':
+                                        subfolder_path = f"{folder_name}/{item['name']}"
+                                        # Get files from this subfolder recursively
+                                        subfolder_items = get_all_files_recursive(
+                                            service,
+                                            item['id'],
+                                            subfolder_path,
+                                            include_summaries
+                                        )
+                                        # Add all file items (not folders) to our result
+                                        items.extend([i for i in subfolder_items if not i.get('is_folder', False)])
+                                
                                 reuse_summaries = True
                 except Exception as e:
                     logging.error(f"Error reusing summaries: {e}")
