@@ -13,3 +13,9 @@ sentencepiece==0.1.99
 # Testing dependencies
 pytest==7.3.1
 pytest-cov==4.1.0
+
+# OCR dependencies
+pytesseract==0.3.10
+pillow==9.5.0
+pdf2image==1.16.0
+opencv-python==4.8.1.78

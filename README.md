@@ -189,6 +189,50 @@ When developing new features, follow this workflow:
 6. Run all tests before merging back to master
 7. Merge the feature branch back to master when ready
 
+## Upcoming Features
+
+### 📌 Feature Request: OCR-Based Summarization for Image and Scanned Files
+
+## Summary
+
+Enhance the summarization engine of the Google Drive Viewer web app to support **image-based and scanned documents** (PDFs, JPG, PNG, TIFF) using **OCR + AI summarization**.
+
+---
+
+## ✨ New Capabilities
+
+- OCR-powered text extraction from:
+  - Scanned PDFs
+  - JPEG, PNG, and TIFF image files
+- Intelligent summarization of OCR-extracted text using existing AI models (e.g., BART or T5)
+- Summary fallback for images that contain no extractable text
+- Unified CSV export with summaries for text and image-based files
+
+---
+
+## 📂 Supported File Types and Techniques
+
+| File Type              | OCR Required | Method                        |
+|------------------------|--------------|-------------------------------|
+| `.pdf` (text)          | ❌           | `PyMuPDF`, `pdfplumber`      |
+| `.pdf` (scanned)       | ✅           | `pdf2image` + `pytesseract`  |
+| `.jpg`, `.png`, `.tif` | ✅           | `Pillow` + `pytesseract`     |
+
+---
+
+## ✅ Requirements
+
+### OCR Engine
+- `pytesseract` for Python OCR bindings
+- Tesseract OCR (native binary) installed on the system
+- Optional preprocessing with OpenCV for image enhancement
+
+### Python Dependencies
+```bash
+pip install pytesseract pillow pdf2image
+sudo apt install tesseract-ocr  # or brew install tesseract (macOS)
+```
+
 ## License
 
 [MIT License](LICENSE)

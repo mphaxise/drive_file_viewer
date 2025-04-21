@@ -19,6 +19,7 @@ import tempfile
 import uuid
 import pickle
 from pathlib import Path
+from ocr_utils import extract_text_from_file_bytes
 
 # Import for GenAI model
 try:
@@ -181,13 +182,15 @@ def generate_file_summary(file_content, file_name, file_type=None, file_size=Non
     file_ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
     
     # File types that don't have extractable text content
-    binary_extensions = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff', 'mp4', 'avi', 'mov', 
+    binary_extensions = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff', 'mp4', 'avi', 'mov',
                          'wmv', 'mp3', 'wav', 'ogg', 'pdf', 'zip', 'exe', 'dll']
-    
-    # Use metadata-based summary for binary files
-    if file_ext in binary_extensions or (file_type and not file_type.startswith('text/') and 
-                                        not 'document' in file_type and not 'sheet' in file_type):
-        return generate_metadata_summary(file_name, file_type or 'application/octet-stream', 
+    # OCR-capable extensions should bypass metadata summary when text is provided via OCR
+    ocr_exts = ['pdf']
+    # Use metadata-based summary for binary files not covered by OCR
+    if (file_ext in binary_extensions and file_ext not in ocr_exts) or \
+       (file_type and not file_type.startswith('text/') and 
+        'document' not in file_type and 'sheet' not in file_type):
+        return generate_metadata_summary(file_name, file_type or 'application/octet-stream',
                                         file_size, created_date, modified_date)
     
     # For text-based files, use the transformer model
@@ -339,6 +342,20 @@ def download_file_content(service, file_id, mime_type):
         logging.error(f"Error downloading file {file_id}: {e}", exc_info=True)
         return None
 
+def download_file_bytes(service, file_id):
+    """Download raw bytes of a file from Drive."""
+    try:
+        request = service.files().get_media(fileId=file_id)
+        bytes_io = BytesIO()
+        downloader = MediaIoBaseDownload(bytes_io, request)
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
+        return bytes_io.getvalue()
+    except Exception as e:
+        logging.error(f"Error downloading raw bytes for {file_id}: {e}")
+        return None
+
 def list_files_in_folder(credentials, folder_id, generate_summaries=False):
     """List all files and folders in the specified Google Drive folder."""
     try:
@@ -421,22 +438,48 @@ def list_files_in_folder(credentials, folder_id, generate_summaries=False):
                     except Exception as e:
                         logging.warning(f"Could not get detailed metadata for {item['name']}: {e}")
                     
-                    # Download file content for summary generation
-                    logging.debug(f"Downloading content for {item['name']} (mime type: {item['mimeType']})")
-                    file_content = download_file_content(service, item['id'], item['mimeType'])
-                    
-                    # Generate summary for any file type
-                    summary = generate_file_summary(
-                        file_content, 
-                        item['name'], 
-                        item['mimeType'], 
-                        file_size, 
-                        created_date, 
-                        modified_date
-                    )
+                    # OCR-based summarization
+                    file_ext = item['name'].split('.')[-1].lower()
+                    ocr_exts = ['pdf']
+                    if file_ext in ocr_exts:
+                        logging.debug(f"OCR summarization for {item['name']}")
+                        raw_bytes = download_file_bytes(service, item['id'])
+                        try:
+                            extracted_text = extract_text_from_file_bytes(raw_bytes, item['name'])
+                        except Exception as ocr_err:
+                            logging.error(f"OCR extraction failed for {item['name']}: {ocr_err}")
+                            extracted_text = ''
+                        if extracted_text.strip():
+                            summary = generate_file_summary(
+                                extracted_text,
+                                item['name'],
+                                item['mimeType'],
+                                file_size,
+                                created_date,
+                                modified_date
+                            )
+                        else:
+                            summary = generate_metadata_summary(
+                                item['name'],
+                                item['mimeType'],
+                                file_size,
+                                created_date,
+                                modified_date
+                            )
+                    else:
+                        # Download file content for summary generation
+                        logging.debug(f"Downloading content for {item['name']} (mime type: {item['mimeType']})")
+                        file_content = download_file_content(service, item['id'], item['mimeType'])
+                        summary = generate_file_summary(
+                            file_content,
+                            item['name'],
+                            item['mimeType'],
+                            file_size,
+                            created_date,
+                            modified_date
+                        )
                     file_item['summary'] = summary
                     logging.info(f"Summary for {item['name']}: {summary[:100]}...")
-                    
                 except Exception as e:
                     logging.error(f"Error generating summary for {item['name']}: {e}")
                     file_item['summary'] = f"Error generating summary: {str(e)[:50]}"
@@ -471,15 +514,19 @@ def index():
 def authorize():
     try:
         print(f"Starting authorization process...")
+        # Use correct callback URI and store state for token exchange
+        redirect_uri = url_for('oauth2callback', _external=True)
         flow = Flow.from_client_secrets_file(
             CLIENT_SECRETS_FILE,
             scopes=SCOPES,
-            redirect_uri="http://localhost:5000/authorize/callback"
+            redirect_uri=redirect_uri
         )
         authorization_url, state = flow.authorization_url(
             access_type='offline',
-            include_granted_scopes='true'
+            include_granted_scopes='true',
+            prompt='consent'
         )
+        session['state'] = state
         print(f"Generated authorization URL: {authorization_url}")
         return jsonify({'auth_url': authorization_url})
     except Exception as e:
@@ -517,6 +564,14 @@ def list_files():
         # Check if we have a token in the session
         try:
             credentials = authenticate()
+            # Only enforce refresh-capable credentials when real Credentials instance
+            if isinstance(credentials, Credentials) and not all([
+                credentials.refresh_token,
+                credentials.token_uri,
+                credentials.client_id,
+                credentials.client_secret
+            ]):
+                raise Exception('authentication_required')
         except Exception as e:
             print(f"Authentication required: {str(e)}")
             print("Starting authentication...")
@@ -527,15 +582,17 @@ def list_files():
                 session['folder_url'] = folder_url
             
             # Start OAuth flow
+            redirect_uri = url_for('oauth2callback', _external=True)
             flow = Flow.from_client_secrets_file(
                 CLIENT_SECRETS_FILE,
                 scopes=SCOPES,
-                redirect_uri="http://127.0.0.1:5006/oauth2callback"
+                redirect_uri=redirect_uri
             )
             
             auth_url, state = flow.authorization_url(
                 access_type='offline',
-                include_granted_scopes='true'
+                include_granted_scopes='true',
+                prompt='consent'
             )
             session['state'] = state
             logging.debug(f"Generated new state {state}.")
@@ -585,6 +642,8 @@ def get_all_files_recursive(service, folder_id, folder_path="Root", include_summ
                     with open(result_file, 'rb') as f:
                         cached_result = pickle.load(f)
                     
+                    folder_name = cached_result.get('folderName', 'Root')
+                    
                     if 'items' in cached_result:
                         # Check if summaries exist in the cached results
                         has_summaries = any(item.get('summary') and 
@@ -604,7 +663,7 @@ def get_all_files_recursive(service, folder_id, folder_path="Root", include_summ
                                                     not summary.startswith("Error generating summary"))
                                     
                                     items.append({
-                                        'folder_path': folder_path,
+                                        'folder_path': folder_name,
                                         'name': item['name'],
                                         'is_folder': False,
                                         'webViewLink': item.get('webViewLink', ''),
@@ -615,7 +674,7 @@ def get_all_files_recursive(service, folder_id, folder_path="Root", include_summ
                                     # For folders, we need to recursively get their contents
                                     # First add the folder itself
                                     items.append({
-                                        'folder_path': folder_path,
+                                        'folder_path': folder_name,
                                         'name': item['name'],
                                         'is_folder': True
                                     })
@@ -705,18 +764,46 @@ def get_all_files_recursive(service, folder_id, folder_path="Root", include_summ
                             except Exception as e:
                                 logging.warning(f"Could not get detailed metadata for {item['name']}: {e}")
                             
-                            # Download file content for summary generation
-                            file_content = download_file_content(service, item['id'], item['mimeType'])
-                            
-                            # Generate summary for any file type
-                            summary = generate_file_summary(
-                                file_content, 
-                                item['name'], 
-                                item['mimeType'], 
-                                file_size, 
-                                created_date, 
-                                modified_date
-                            )
+                            # OCR-based summarization
+                            file_ext = item['name'].split('.')[-1].lower()
+                            ocr_exts = ['pdf']
+                            if file_ext in ocr_exts:
+                                logging.debug(f"OCR summarization for {item['name']}")
+                                raw_bytes = download_file_bytes(service, item['id'])
+                                try:
+                                    extracted_text = extract_text_from_file_bytes(raw_bytes, item['name'])
+                                except Exception as ocr_err:
+                                    logging.error(f"OCR extraction failed for {item['name']}: {ocr_err}")
+                                    extracted_text = ''
+                                if extracted_text.strip():
+                                    summary = generate_file_summary(
+                                        extracted_text,
+                                        item['name'],
+                                        item['mimeType'],
+                                        file_size,
+                                        created_date,
+                                        modified_date
+                                    )
+                                else:
+                                    summary = generate_metadata_summary(
+                                        item['name'],
+                                        item['mimeType'],
+                                        file_size,
+                                        created_date,
+                                        modified_date
+                                    )
+                            else:
+                                # Download file content for summary generation
+                                logging.debug(f"Downloading content for {item['name']} (mime type: {item['mimeType']})")
+                                file_content = download_file_content(service, item['id'], item['mimeType'])
+                                summary = generate_file_summary(
+                                    file_content,
+                                    item['name'],
+                                    item['mimeType'],
+                                    file_size,
+                                    created_date,
+                                    modified_date
+                                )
                             file_item['summary'] = summary
                         except Exception as e:
                             logging.error(f"Error generating summary for {item['name']}: {e}")
@@ -904,6 +991,8 @@ def oauth2callback():
         })
         
         session['token'] = token_json
+        with open('debug_token.json', 'w') as f:
+            f.write(token_json)
         logging.debug(f"Token saved to session. Keys: {list(session.keys())}")
         
         # Token saved to session
