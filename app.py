@@ -250,7 +250,7 @@ TEMP_DIR = Path(tempfile.gettempdir()) / 'drive_viewer_summaries'
 TEMP_DIR.mkdir(exist_ok=True)
 
 # Configure Google OAuth2
-CLIENT_SECRETS_FILE = "credentials.json"
+CLIENT_SECRETS_FILE = os.environ.get("GOOGLE_CLIENT_SECRETS", "credentials.json")
 SCOPES = [
     'https://www.googleapis.com/auth/drive.readonly',
     'https://www.googleapis.com/auth/drive.metadata.readonly'
