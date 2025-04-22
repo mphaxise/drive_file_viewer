@@ -14,6 +14,7 @@ from urllib.parse import urlparse, parse_qs
 import os
 import json
 import csv
+from io import BytesIO
 import threading
 import webbrowser
 import sys
