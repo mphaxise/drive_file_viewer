@@ -9,7 +9,11 @@ import json
 import csv
 from io import StringIO, BytesIO
 from datetime import datetime
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    logging.info("python-dotenv not installed; skipping .env load")
 import threading
 import webbrowser
 import logging
@@ -45,8 +49,6 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout)
     ]
 )
-
-load_dotenv()
 
 # Initialize the summarizer
 summarizer = None
