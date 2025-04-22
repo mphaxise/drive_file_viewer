@@ -4,6 +4,7 @@ werkzeug
 google-auth-oauthlib
 google-auth
 google-api-python-client
+python-dotenv
 
 # GenAI model dependencies
 transformers

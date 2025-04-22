@@ -7,16 +7,16 @@ from urllib.parse import urlparse, parse_qs
 import os
 import json
 import csv
-from io import StringIO, BytesIO
-from datetime import datetime
+import logging
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
-    logging.info("python-dotenv not installed; skipping .env load")
+    logging.warning("python-dotenv not installed; skipping .env load")
+import io
+from datetime import datetime
 import threading
 import webbrowser
-import logging
 import sys
 import time
 import tempfile
