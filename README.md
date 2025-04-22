@@ -160,6 +160,14 @@ Current code coverage: 93%
 - Concise file summaries (25 words max) for all file types
 - Code coverage: 93%
 
+### v1.1 (April 21, 2025)
+- Added OCR-based summarization for images and scanned documents (PDFs, JPGs, PNGs) using Poppler/Tesseract
+- Added fail-fast startup checks for Poppler and Tesseract dependencies
+- Auto-redirect to OAuth flow when session credentials are incomplete
+- Improved error handling for recursive summarization and chunk processing
+- Added `ocr_utils.py` module and OCR utility tests
+- Maintained overall code coverage above 93%
+
 ### Test Suites
 
 - `test_oauth.py`: Tests for OAuth and authentication flows (100% coverage)
