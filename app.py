@@ -1,3 +1,10 @@
+import logging
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    logging.warning("python-dotenv not installed; skipping .env load")
+
 from flask import Flask, render_template, request, jsonify, session, send_file, redirect, url_for
 from google_auth_oauthlib.flow import InstalledAppFlow, Flow
 from google.oauth2.credentials import Credentials
@@ -7,14 +14,6 @@ from urllib.parse import urlparse, parse_qs
 import os
 import json
 import csv
-import logging
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    logging.warning("python-dotenv not installed; skipping .env load")
-import io
-from datetime import datetime
 import threading
 import webbrowser
 import sys
@@ -23,6 +22,7 @@ import tempfile
 import uuid
 import pickle
 from pathlib import Path
+from datetime import datetime
 from ocr_utils import extract_text_from_file_bytes
 
 # Import for GenAI model
