@@ -28,3 +28,4 @@ token.json
 
 # macOS
 .DS_Store
+vision_credentials.json
