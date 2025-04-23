@@ -257,7 +257,10 @@ SCOPES = [
 ]
 
 # OAuth2 configuration
-PORT = 5006  # Main server port
+os.environ['OAUTHLIB_RELAX_TOKEN_SCOPE'] = '1'
+os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'  # Remove in production
+os.environ['OAUTHLIB_REDIRECT_URI'] = 'http://localhost:5006/oauth2callback'
+PORT = 5006  # Must match redirect URIs in Google Cloud Console
 
 def authenticate():
     """Retrieve credentials from session."""
@@ -1009,6 +1012,21 @@ def oauth2callback():
         logging.error(f"Error in OAuth callback: {str(e)}")
         return f"Error: {str(e)}", 400
 
+@app.route('/process', methods=['POST'])
+def process_folder():
+    from drive_integration import DriveService
+    try:
+        folder_url = request.json.get('folder_url')
+        if not folder_url:
+            return jsonify({"error": "Missing folder_url"}), 400
+        
+        drive = DriveService(vision_creds_path="vision_credentials.json")
+        results = drive.process_folder(folder_url.split('/')[-1])
+        return jsonify({"files": results})
+        
+    except Exception as e:
+        logging.error(f"Processing error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == '__main__':
-    os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'  # For development only
     app.run(port=PORT, debug=True)
